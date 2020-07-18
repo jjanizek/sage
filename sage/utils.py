@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from numpy.random import multivariate_normal
 
 
 class SAGEValues:
@@ -299,6 +300,52 @@ class MarginalImputer:
         S = np.repeat(S, self.samples, 0)
         samples = self.data[np.random.choice(self.N, len(x), replace=True)]
         return S * x + (1 - S) * samples
+
+class ConditionalImputer:
+    '''
+    Impute features using a draw from the conditional.
+    Args:
+      data: np.ndarray of size (samples, dimensions) representing the data
+        distribution.
+      samples: number of samples to draw from marginal distribution.
+    '''
+    def __init__(self, data, samples):
+        self.data = data
+        self.samples = samples
+        self.N = len(data)
+        self.sample_covariance = np.cov(data,rowvar=False)
+        self.sample_mean = np.mean(data,axis=0)
+
+    def __call__(self, x, S):
+        arrays = [S for _ in range(self.samples)]
+        shape = (len(arrays)*arrays[0].shape[0], arrays[0].shape[1])
+        interleaved_S = np.hstack(arrays).reshape(shape)
+        x_arrays = [x for _ in range(self.samples)]
+        shape = (len(x_arrays)*x_arrays[0].shape[0], x_arrays[0].shape[1])
+        interleaved_X = np.hstack(x_arrays).reshape(shape)
+
+        for row_ind in range(x.shape[0]):
+            x_batch = interleaved_X[row_ind*self.samples:((row_ind+1)*self.samples),:]
+            S_batch = interleaved_S[row_ind*self.samples:((row_ind+1)*self.samples),:]
+            S_row = S_batch[0,:].reshape(-1)
+            permutation = np.concatenate([np.where(S_row == 0)[0],np.where(S_row ==1)[0]])
+
+            permuted_cov = self.sample_covariance[:,permutation][permutation,:]
+            permuted_mean = self.sample_mean[permutation]
+            permuted_x = x_batch[:,permutation]
+            
+            Sigma11 = permuted_cov[:len(np.where(S_row == 0)[0]),:len(np.where(S_row == 0)[0])]
+            Sigma12 = permuted_cov[:len(np.where(S_row == 0)[0]),len(np.where(S_row == 0)[0]):]
+            Sigma21 = permuted_cov[len(np.where(S_row == 0)[0]):,:len(np.where(S_row == 0)[0])]
+            Sigma22 = permuted_cov[len(np.where(S_row == 0)[0]):,len(np.where(S_row == 0)[0]):]
+            
+            SigmaBar = Sigma11 - Sigma12.dot(np.linalg.inv(Sigma22).dot(Sigma21))
+            MuBar = permuted_mean[:len(np.where(S_row == 0)[0])] + Sigma12.dot(np.linalg.inv(Sigma22)).dot((permuted_x[0,len(np.where(S_row == 0)[0]):] - permuted_mean[len(np.where(S_row == 0)[0]):]))
+            mvn = multivariate_normal(MuBar,SigmaBar,self.samples)
+            permuted_x[:,:len(np.where(S_row == 0)[0])] = mvn
+            interleaved_X[row_ind*self.samples:((row_ind+1)*self.samples),:] = permuted_x[:,np.argsort(permutation)]
+            
+        return interleaved_X
 
 
 def get_loss(loss, reduction='mean'):
